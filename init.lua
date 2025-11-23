@@ -1,128 +1,62 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local StateMachine = require(ReplicatedStorage.Shared.Utilities.StateMachine)
+local weaponsFolder = ReplicatedStorage.Shared.Weapons
+local FireWeaponRemote = ReplicatedStorage.Remotes.WeaponRemotes.FireWeapon
+local ReloadWeaponRemote = ReplicatedStorage.Remotes.WeaponRemotes.ReloadWeapon
 
-local RoundService = {}
-RoundService.Config = require(script.RoundConfig)
-RoundService.Timer = 0
+local WeaponService = {}
+WeaponService.PlayerWeapons = {}
+WeaponService.WeaponModules = {}
 
-local StateHandlers = {}
-for _, module in ipairs(script.StateHandlers:GetChildren()) do
-    local stateName = module.Name
-    StateHandlers[stateName] = require(module)
-end
-
-local states = {}
-for stateName, handler in pairs(StateHandlers) do
-    states[stateName] = {
-        Enter = function()
-            handler.Enter(RoundService)
-        end,
-
-        Exit = function()
-            handler.Exit(RoundService)
-        end,
-    }
-end
-
-RoundService.StateMachine = StateMachine.new(states)
-
-function RoundService:SetTimer(seconds)
-    self.Timer = seconds
-end
-
-function RoundService:ResetPlayers()
-    for _, player in ipairs(Players:GetPlayers()) do
-        player:LoadCharacter()
+for _, weaponModule in pairs(weaponsFolder:GetChildren()) do
+    if weaponModule:IsA("ModuleScript") then
+        local weaponName = weaponModule.Name
+        WeaponService.WeaponModules[weaponName] = require(weaponModule)
     end
 end
 
-function RoundService:GetPlayerCount()
-    return #Players:GetPlayers()
-end
+function WeaponService:GetWeapon(Player, WeaponName)
+    self.PlayerWeapons[Player] = self.PlayerWeapons[Player] or {}
 
-function RoundService:HasEnoughPlayers()
-    return self:GetPlayerCount() >= self.Config.MinimumPlayers
-end
+    if not self.PlayerWeapons[Player][WeaponName] then
+        local weaponModule = self.WeaponModules[WeaponName]
 
-function RoundService:CheckPlayerCount()
-    local currentState = self.StateMachine.Current
-
-    if not self:HasEnoughPlayers() then
-        if currentState ~= "WaitingForPlayers" then
-            print("Not enough players: returning to waiting state")
-            self.StateMachine:Change("WaitingForPlayers")
+        if weaponModule then
+            self.PlayerWeapons[Player][WeaponName] = weaponModule.new(Player)
+        else
+            warn("Weapon module not found: " .. WeaponName)
+            return
         end
-
-        return
     end
 
-    if currentState == "WaitingForPlayers" then
-        print("Enough players: starting intermission")
-        self.StateMachine:Change("Intermission")
-    end
+    return self.PlayerWeapons[Player][WeaponName]
 end
 
-function RoundService:CheckTransition()
-    if self.Timer == nil then
-        return
+FireWeaponRemote.OnServerEvent:Connect(function(Player, WeaponName, Origin, Direction)
+    local weapon = WeaponService:GetWeapon(Player, WeaponName)
+
+    local CanFire, Reason = weapon:CanFire()
+
+    if weapon and CanFire and Reason == "Fire" then
+        weapon:Shoot(Origin, Direction)
+
+        FireWeaponRemote:FireClient(Player, true)
+    elseif Reason == "Empty" then
+        FireWeaponRemote:FireClient(Player, false)
     end
+end)
 
-    if self.Timer > 0 then
-        return
+ReloadWeaponRemote.OnServerEvent:Connect(function(Player, WeaponName)
+    local weapon = WeaponService:GetWeapon(Player, WeaponName)
+
+    if weapon then
+        weapon:Reload()
     end
+end)
 
-    local currentState = self.StateMachine.Current
+Players.PlayerRemoving:Connect(function(Player)
+    WeaponService.PlayerWeapons[Player] = nil
+end)
 
-    if currentState == "Intermission" then
-        RoundService.StateMachine:Change("InRound")
-
-    elseif currentState == "InRound" then
-        RoundService.StateMachine:Change("EndRound")
-
-    elseif currentState == "EndRound" then
-        RoundService.StateMachine:Change("Intermission")
-    end
-end
-
-function RoundService:Tick()
-    task.wait(1)
-
-    if self.Timer ~= nil then
-        self.Timer = self.Timer - 1
-        self:CheckTransition()
-    end
-
-    task.defer(function()
-        self:Tick()
-    end)
-end
-
-function RoundService:StartTimerLoop()
-    task.spawn(function()
-        self:Tick()
-    end)
-end
-
-function RoundService:Start()
-    print("Starting RoundService")
-
-    self.StateMachine:Change("WaitingForPlayers")
-
-    self:CheckPlayerCount()
-    self:StartTimerLoop()
-
-    Players.PlayerAdded:Connect(function()
-        self:CheckPlayerCount()
-    end)
-
-    Players.PlayerRemoving:Connect(function()
-        self:CheckPlayerCount()
-    end)
-end
-
--- Automatically start the RoundService when this module is loaded
-RoundService:Start()
-
-return RoundService
+return WeaponService
